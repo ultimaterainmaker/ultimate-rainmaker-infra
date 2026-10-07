@@ -1,0 +1,15 @@
+{
+  "name": "ghl-sf-optout",
+  "version": "1.0.0",
+  "private": true,
+  "description": "GHL webhook -> Salesforce Contact opt-out sync (replaces the Zapier zap)",
+  "type": "module",
+  "main": "src/server.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test"
+  }
+}
