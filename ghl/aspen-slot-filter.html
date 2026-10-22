@@ -22,7 +22,7 @@
 <script>
 (function () {
   var CONFIG = {
-    api: 'https://REPLACE-WITH-RAILWAY-DOMAIN/availability',
+    api: 'https://daring-purpose-production-0684.up.railway.app/availability',
     calendarId: 'YYeqYMT6Lomuo9JN842r',
     products: ['Windows', 'Doors', 'Siding', 'Roofing', 'Gutters'],
   };
@@ -47,7 +47,7 @@
       lock(true);
       return Promise.resolve();
     }
-    setStatus('Checking open times…');
+    setStatus('Checking open times...');
     var url = CONFIG.api + '?zip=' + encodeURIComponent(state.zip) +
       (state.product ? '&product=' + encodeURIComponent(state.product) : '');
     state.pending = origFetch(url)
@@ -127,16 +127,32 @@
     if (tone) ui.status.setAttribute('data-tone', tone); else ui.status.removeAttribute('data-tone');
   }
 
-  // The calendar re-requests free-slots when you change months, so bounce next -> back.
+  // The calendar re-requests free-slots when you change months. With no allowed slots it
+  // auto-jumps months ahead, so walk back to the current month (each click refetches).
+  // Already there -> bounce next -> back instead.
+  function prevEnabled(btn) { return btn && !btn.disabled && !btn.classList.contains('disabled'); }
+
   function refreshCalendar() {
     var cal = calendarEl();
-    var next = cal && cal.querySelector('button.arrowNext');
-    if (!next) return;
-    next.click();
-    setTimeout(function () {
+    if (!cal) return;
+    var steps = 0;
+    (function back() {
       var prev = cal.querySelector('button.arrowPrevious');
-      if (prev) prev.click();
-    }, 700);
+      if (prevEnabled(prev) && steps < 24) {
+        steps++;
+        prev.click();
+        setTimeout(back, 400);
+        return;
+      }
+      if (steps) return;
+      var next = cal.querySelector('button.arrowNext');
+      if (!next) return;
+      next.click();
+      setTimeout(function () {
+        var p = cal.querySelector('button.arrowPrevious');
+        if (p) p.click();
+      }, 700);
+    })();
   }
 
   function onChange() {
@@ -173,7 +189,7 @@
     ui.zip.addEventListener('input', onChange);
     ui.product.addEventListener('change', onChange);
     lock(!state.allowed || !state.allowed.size);
-    if (state.pending) setStatus('Checking open times…');
+    if (state.pending) setStatus('Checking open times...');
     else if (!state.zip) setStatus('Enter your ZIP code to see open times.');
     return true;
   }
