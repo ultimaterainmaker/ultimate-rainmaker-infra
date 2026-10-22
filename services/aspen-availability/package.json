@@ -1,0 +1,15 @@
+{
+  "name": "aspen-availability",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Server-side proxy for Aspen's partner availability API, so the booking page only shows Aspen-open times",
+  "type": "module",
+  "main": "src/server.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test"
+  }
+}

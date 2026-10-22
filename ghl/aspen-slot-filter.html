@@ -1,0 +1,195 @@
+<!--
+  Aspen slot filter for the GHL funnel calendar element.
+  Paste this whole file into the funnel STEP's Settings -> Custom Code -> Head tracking code
+  (head, not a body Custom HTML element: it has to wrap fetch before the calendar loads).
+
+  What it does:
+  - Adds a ZIP field + product dropdown above the calendar (ZIP prefills from ?zip=).
+  - Wraps window.fetch so the calendar's free-slots call only returns times that are
+    open in BOTH the GHL calendar and Aspen's availability for that ZIP/product.
+  - No ZIP yet, or Aspen couldn't be checked -> the calendar shows no times.
+  The Aspen key lives in the aspen-availability service, never in this page.
+-->
+<style>
+  .aspen-filter { box-sizing: border-box; width: 100%; max-width: 720px; align-self: center; margin: 0 auto 16px; padding: 16px; border: 1px solid #e5e7eb; border-radius: 8px; font-family: inherit; background: #fff; }
+  .aspen-filter__row { display: flex; gap: 12px; flex-wrap: wrap; }
+  .aspen-filter label { flex: 1 1 200px; display: flex; flex-direction: column; gap: 4px; font-size: 14px; font-weight: 600; color: #111827; }
+  .aspen-filter input, .aspen-filter select { font: inherit; font-weight: 400; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; background: #fff; color: #111827; }
+  .aspen-filter__status { margin: 10px 0 0; font-size: 14px; color: #4b5563; min-height: 1.2em; }
+  .aspen-filter__status[data-tone="bad"] { color: #b91c1c; }
+  .aspen-cal-locked { opacity: .4; pointer-events: none; transition: opacity .2s; }
+</style>
+<script>
+(function () {
+  var CONFIG = {
+    api: 'https://REPLACE-WITH-RAILWAY-DOMAIN/availability',
+    calendarId: 'YYeqYMT6Lomuo9JN842r',
+    products: ['Windows', 'Doors', 'Siding', 'Roofing', 'Gutters'],
+  };
+
+  var REASONS = {
+    out_of_area: "Sorry, Aspen doesn't cover that ZIP yet.",
+    product_not_offered: "That product isn't offered in this ZIP. Try another product.",
+    schedule_not_loaded: "The schedule for this area isn't posted yet. Check back soon.",
+    nothing_in_window: 'Fully booked right now. Check back soon.',
+  };
+
+  var state = { zip: '', product: '', allowed: null, pending: null, seq: 0 };
+  var ui = {};
+
+  // ---------- Aspen lookup ----------
+  function lookup() {
+    var seq = ++state.seq;
+    if (!/^\d{5}$/.test(state.zip)) {
+      state.allowed = null;
+      state.pending = null;
+      setStatus('Enter your ZIP code to see open times.');
+      lock(true);
+      return Promise.resolve();
+    }
+    setStatus('Checking open times…');
+    var url = CONFIG.api + '?zip=' + encodeURIComponent(state.zip) +
+      (state.product ? '&product=' + encodeURIComponent(state.product) : '');
+    state.pending = origFetch(url)
+      .then(function (res) {
+        return res.json().catch(function () { return {}; }).then(function (body) { return { res: res, body: body }; });
+      })
+      .then(function (r) {
+        if (seq !== state.seq) return; // a newer lookup took over
+        if (r.res.status === 429) {
+          state.allowed = new Set();
+          setStatus('Too many checks, try again in ' + (r.body.retryAfter || 60) + ' seconds.', 'bad');
+          return;
+        }
+        if (!r.res.ok) {
+          state.allowed = new Set();
+          setStatus(r.body.message || "Couldn't check availability, try again in a minute.", 'bad');
+          return;
+        }
+        state.allowed = new Set((r.body.slots || []).map(function (s) { return Date.parse(s); }));
+        if (!state.allowed.size) setStatus(REASONS[r.body.reason] || 'No open times right now.', 'bad');
+        else setStatus('');
+      })
+      .catch(function () {
+        if (seq !== state.seq) return;
+        state.allowed = new Set();
+        setStatus("Couldn't check availability, try again in a minute.", 'bad');
+      })
+      .then(function () {
+        if (seq === state.seq) lock(!state.allowed || !state.allowed.size);
+      });
+    return state.pending;
+  }
+
+  // ---------- fetch wrapper ----------
+  var origFetch = window.fetch.bind(window);
+  var SLOTS_RE = new RegExp('/calendars/' + CONFIG.calendarId + '/free-slots');
+
+  function slotStart(s) { return typeof s === 'string' ? s : s && (s.startTime || s.start); }
+
+  function filterSlots(json) {
+    var allowed = state.allowed || new Set();
+    Object.keys(json).forEach(function (day) {
+      var d = json[day];
+      if (!d || !Array.isArray(d.slots)) return;
+      d.slots = d.slots.filter(function (s) { return allowed.has(Date.parse(slotStart(s))); });
+      if (!d.slots.length) delete json[day];
+    });
+    return json;
+  }
+
+  window.fetch = function (input, init) {
+    var url = typeof input === 'string' ? input : (input && input.url) || '';
+    if (!SLOTS_RE.test(url)) return origFetch(input, init);
+    return Promise.all([origFetch(input, init), state.pending]).then(function (out) {
+      var res = out[0];
+      if (!res.ok) return res;
+      return res.clone().json().then(function (json) {
+        var headers = new Headers(res.headers);
+        headers.delete('content-length');
+        headers.delete('content-encoding');
+        return new Response(JSON.stringify(filterSlots(json)), { status: res.status, statusText: res.statusText, headers: headers });
+      }, function () { return res; });
+    });
+  };
+
+  // ---------- UI ----------
+  function calendarEl() { return document.querySelector('.c-calendar'); }
+
+  function lock(on) {
+    var cal = calendarEl();
+    if (cal) cal.classList.toggle('aspen-cal-locked', on);
+  }
+
+  function setStatus(text, tone) {
+    if (!ui.status) return;
+    ui.status.textContent = text;
+    if (tone) ui.status.setAttribute('data-tone', tone); else ui.status.removeAttribute('data-tone');
+  }
+
+  // The calendar re-requests free-slots when you change months, so bounce next -> back.
+  function refreshCalendar() {
+    var cal = calendarEl();
+    var next = cal && cal.querySelector('button.arrowNext');
+    if (!next) return;
+    next.click();
+    setTimeout(function () {
+      var prev = cal.querySelector('button.arrowPrevious');
+      if (prev) prev.click();
+    }, 700);
+  }
+
+  function onChange() {
+    var zip = ui.zip.value.replace(/\D/g, '').slice(0, 5);
+    if (ui.zip.value !== zip) ui.zip.value = zip;
+    var product = ui.product.value;
+    if (zip === state.zip && product === state.product) return;
+    var hadValidZip = /^\d{5}$/.test(state.zip);
+    state.zip = zip;
+    state.product = product;
+    if (!/^\d{5}$/.test(zip) && !hadValidZip) { setStatus('Enter your ZIP code to see open times.'); return; }
+    lookup().then(refreshCalendar);
+  }
+
+  function mount() {
+    var cal = calendarEl();
+    if (!cal || document.querySelector('.aspen-filter')) return !!cal;
+    var box = document.createElement('div');
+    box.className = 'aspen-filter';
+    box.innerHTML =
+      '<div class="aspen-filter__row">' +
+        '<label>ZIP code<input type="text" inputmode="numeric" autocomplete="postal-code" maxlength="5" placeholder="e.g. 17601"></label>' +
+        '<label>Product<select><option value="">Any product</option>' +
+          CONFIG.products.map(function (p) { return '<option value="' + p + '">' + p + '</option>'; }).join('') +
+        '</select></label>' +
+      '</div>' +
+      '<p class="aspen-filter__status" aria-live="polite"></p>';
+    cal.parentNode.insertBefore(box, cal);
+    ui.zip = box.querySelector('input');
+    ui.product = box.querySelector('select');
+    ui.status = box.querySelector('.aspen-filter__status');
+    ui.zip.value = state.zip;
+    ui.product.value = state.product;
+    ui.zip.addEventListener('input', onChange);
+    ui.product.addEventListener('change', onChange);
+    lock(!state.allowed || !state.allowed.size);
+    if (state.pending) setStatus('Checking open times…');
+    else if (!state.zip) setStatus('Enter your ZIP code to see open times.');
+    return true;
+  }
+
+  // Prefill from the URL and start the lookup right away, before the calendar asks for slots
+  var params = new URLSearchParams(location.search);
+  var urlZip = (params.get('zip') || params.get('postal_code') || '').replace(/\D/g, '').slice(0, 5);
+  var urlProduct = params.get('product') || '';
+  state.zip = urlZip;
+  state.product = CONFIG.products.indexOf(urlProduct) >= 0 ? urlProduct : '';
+  if (state.zip) lookup();
+
+  // The calendar is rendered by the page app, so wait for it to show up
+  var tries = 0;
+  var timer = setInterval(function () {
+    if (mount() || ++tries > 100) clearInterval(timer);
+  }, 150);
+})();
+</script>
