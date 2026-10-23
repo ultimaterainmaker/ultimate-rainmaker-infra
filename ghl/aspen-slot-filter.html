@@ -18,6 +18,11 @@
   .aspen-filter__status { margin: 10px 0 0; font-size: 14px; color: #4b5563; min-height: 1.2em; }
   .aspen-filter__status[data-tone="bad"] { color: #b91c1c; }
   .aspen-cal-locked { opacity: .4; pointer-events: none; transition: opacity .2s; }
+  /* Past Aspen's last open slot: no point going further ahead */
+  .c-calendar[data-aspen-end] button.arrowNext { opacity: .35; pointer-events: none; }
+  .c-calendar[data-aspen-end] a[aria-label="Find next available slot"] { font-size: 0; }
+  .c-calendar[data-aspen-end] a[aria-label="Find next available slot"] svg { display: none; }
+  .c-calendar[data-aspen-end] a[aria-label="Find next available slot"]::before { content: 'Back to first open date'; font-size: 14px; }
 </style>
 <script>
 (function () {
@@ -98,9 +103,27 @@
     return json;
   }
 
+  // Aspen only posts ~2 weeks out, so once the month being shown reaches Aspen's last open
+  // slot, block "next month" and turn GHL's "Find next available slot" (which would chase
+  // empty months forever) into a jump back to the first open date.
+  var monthSeq = 0;
+
+  function markWindowEnd(seq, monthEnd) {
+    var last = 0;
+    if (state.allowed) state.allowed.forEach(function (t) { if (t > last) last = t; });
+    var atEnd = !last || !monthEnd || monthEnd >= last;
+    setTimeout(function () {
+      var cal = calendarEl();
+      if (!cal || seq !== monthSeq) return; // a newer month request took over
+      if (atEnd) cal.setAttribute('data-aspen-end', ''); else cal.removeAttribute('data-aspen-end');
+    }, 0);
+  }
+
   window.fetch = function (input, init) {
     var url = typeof input === 'string' ? input : (input && input.url) || '';
     if (!SLOTS_RE.test(url)) return origFetch(input, init);
+    var seq = ++monthSeq;
+    var monthEnd = Number(new URL(url, location.href).searchParams.get('endDate')) || 0;
     return Promise.all([origFetch(input, init), state.pending]).then(function (out) {
       var res = out[0];
       if (!res.ok) return res;
@@ -108,10 +131,21 @@
         var headers = new Headers(res.headers);
         headers.delete('content-length');
         headers.delete('content-encoding');
-        return new Response(JSON.stringify(filterSlots(json)), { status: res.status, statusText: res.statusText, headers: headers });
+        var body = JSON.stringify(filterSlots(json));
+        markWindowEnd(seq, monthEnd);
+        return new Response(body, { status: res.status, statusText: res.statusText, headers: headers });
       }, function () { return res; });
     });
   };
+
+  document.addEventListener('click', function (e) {
+    var link = e.target.closest && e.target.closest('a[aria-label="Find next available slot"]');
+    var cal = calendarEl();
+    if (!link || !cal || !cal.hasAttribute('data-aspen-end')) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    refreshCalendar();
+  }, true);
 
   // ---------- UI ----------
   function calendarEl() { return document.querySelector('.c-calendar'); }
